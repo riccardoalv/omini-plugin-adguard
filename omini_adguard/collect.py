@@ -25,6 +25,11 @@ from omini_sdk import (
     log,
 )
 
+try:  # DNS lookups: Omini 1.6 and later
+    from omini_sdk import DnsLookup
+except ImportError:
+    DnsLookup = None  # type: ignore[assignment,misc]
+
 from omini_adguard.client import Client, NotFound
 
 T = TypeVar("T")
@@ -40,6 +45,9 @@ LIVE_STATUS = {
 }
 # Fields of a filter list that change with every update of the list.
 LIVE_FILTER = {"rules_count", "last_updated"}
+# Entries read from the query log, and distinct (client, name) lookups kept.
+QUERYLOG_LIMIT = 1000
+MAX_LOOKUPS = 500
 
 
 def client_from(cfg: Config) -> Client:
@@ -127,6 +135,55 @@ def records(rows: list[dict[str, Any]]) -> list[DnsRecord]:
             continue
         out[(name, ip)] = DnsRecord(name=name, ip=ip)
     return [out[k] for k in sorted(out)]
+
+
+def answer_ips(row: dict[str, Any]) -> list[str]:
+    """The A and AAAA addresses of an answer (a blocked one's 0.0.0.0 or :: is
+    not an address anyone connects to)."""
+    out = []
+    for a in row.get("answer") or []:
+        if not isinstance(a, dict) or a.get("type") not in ("A", "AAAA"):
+            continue
+        try:
+            ip = ipaddress.ip_address(str(a.get("value")).strip())
+        except ValueError:
+            continue
+        if not ip.is_unspecified:
+            out.append(str(ip))
+    return out
+
+
+def lookups(rows: list[Any]) -> list[Any]:
+    """One lookup per client and name, newest first (the log's order), with
+    every address it was answered."""
+    found: dict[tuple[str, str], list[str]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        client = str(row.get("client") or "").strip()
+        domain = dns_name((row.get("question") or {}).get("name"))
+        if not client or not domain:
+            continue
+        key = (client, domain)
+        if key not in found:
+            if len(found) >= MAX_LOOKUPS:
+                continue
+            found[key] = []
+        found[key] += [ip for ip in answer_ips(row) if ip not in found[key]]
+    return [DnsLookup(client=c, domain=d, answers=ips or None) for (c, d), ips in found.items()]
+
+
+def recent_lookups(c: Client) -> list[Any] | None:
+    """The query log's recent lookups; none with an older Omini, a log that
+    is off, or a failed read (they only name where devices go)."""
+    if DnsLookup is None or "dns_lookups" not in Device.model_fields:
+        return None
+    try:
+        data = c.get(f"/control/querylog?limit={QUERYLOG_LIMIT}") or {}
+        return lookups(data.get("data") or []) or None
+    except Exception as e:
+        log.debug("query log not read: %s", e)
+        return None
 
 
 def when(value: Any) -> datetime | None:
@@ -226,6 +283,8 @@ def read(c: Client, host: str) -> Device:
         dns_records=records(rows),
         services=services,
     )
+    if (seen := recent_lookups(c)) is not None:
+        dev.dns_lookups = seen
     if dhcp_on:
         got = leases(dhcp)
         dev.dhcp_leases = got

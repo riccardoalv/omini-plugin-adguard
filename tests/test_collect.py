@@ -7,6 +7,7 @@ from omini_sdk import Change, Config, PluginError
 from omini_sdk.plugin import Plugin
 
 import main  # noqa: F401  (registers the functions on the SDK's plugin)
+import omini_adguard.collect as collect_module
 from omini_adguard.collect import apply, backup, collect
 from omini_adguard.collect import test as check
 
@@ -58,6 +59,68 @@ def test_collect_reads_dhcp_when_on(adguard, cfg):
     [pool] = dev.dhcp_pools
     assert (pool.network, pool.total, pool.used) == ("192.168.1.0/24", 100, 2)
     assert dev.dns_domain is None
+
+
+def lookups(dev):
+    return [(x.client, x.domain, x.answers) for x in dev.dns_lookups or []]
+
+
+def test_collect_reads_the_query_log(adguard, cfg):
+    [dev] = collect(cfg)
+    assert ("GET", "/control/querylog") in adguard.calls
+    # One per client and name, newest first, with the union of A/AAAA answers;
+    # a blocked answer (0.0.0.0) has no address, nor does one without answer.
+    assert lookups(dev) == [
+        ("192.168.1.42", "example.com", ["93.184.216.34", "2606:2800:220:1::248"]),
+        ("192.168.1.50", "ads.example.net", None),
+        ("192.168.1.50", "cached.example.org", None),
+    ]
+
+
+def test_collect_caps_the_lookups(adguard, cfg, monkeypatch):
+    monkeypatch.setattr(collect_module, "MAX_LOOKUPS", 2)
+    [dev] = collect(cfg)
+    assert [d for _, d, _ in lookups(dev)] == ["example.com", "ads.example.net"]
+
+
+def test_collect_asks_for_a_thousand_entries(adguard, cfg):
+    seen = []
+
+    def handler(request):
+        if request.url.path == "/control/querylog":
+            seen.append(request.url.params.get("limit"))
+        return adguard.handler(request)
+
+    adguard.hook = handler
+    collect(cfg)
+    assert seen == ["1000"]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        httpx.Response(200, json={"oldest": "", "data": []}),  # query log off
+        httpx.Response(500, text="boom"),
+        httpx.Response(404, text="404 page not found"),
+    ],
+)
+def test_collect_without_the_query_log(adguard, cfg, answer):
+    def handler(request):
+        if request.url.path == "/control/querylog":
+            return answer
+        return adguard.handler(request)
+
+    adguard.hook = handler
+    [dev] = collect(cfg)
+    assert dev.dns_lookups is None
+    assert names(dev)  # the rest is read as usual
+
+
+def test_collect_with_an_older_omini(adguard, cfg, monkeypatch):
+    monkeypatch.setattr(collect_module, "DnsLookup", None)
+    [dev] = collect(cfg)
+    assert dev.dns_lookups is None
+    assert ("GET", "/control/querylog") not in adguard.calls
 
 
 def test_collect_without_dhcp(adguard, cfg):

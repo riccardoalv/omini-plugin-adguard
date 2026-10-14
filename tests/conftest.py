@@ -93,6 +93,52 @@ class FakeAdGuard:
             "auto_clients": [{"name": "laptop", "ip": "192.168.1.101", "source": "dhcp"}],
             "supported_tags": ["device_pc"],
         }
+        # Newest first, as /control/querylog answers.
+        self.querylog = {
+            "oldest": "2026-10-12T17:00:00Z",
+            "data": [
+                {
+                    "client": "192.168.1.42",
+                    "question": {"class": "IN", "name": "Example.com.", "type": "A"},
+                    "answer": [
+                        {"type": "CNAME", "value": "edge.example.net.", "ttl": 300},
+                        {"type": "A", "value": "93.184.216.34", "ttl": 300},
+                    ],
+                    "reason": "NotFilteredNotFound",
+                    "status": "NOERROR",
+                    "time": "2026-10-12T17:59:00Z",
+                },
+                {
+                    "client": "192.168.1.42",
+                    "question": {"class": "IN", "name": "example.com", "type": "AAAA"},
+                    "answer": [{"type": "AAAA", "value": "2606:2800:220:1::248", "ttl": 300}],
+                    "reason": "NotFilteredNotFound",
+                    "time": "2026-10-12T17:58:00Z",
+                },
+                {
+                    "client": "192.168.1.42",
+                    "question": {"class": "IN", "name": "example.com", "type": "A"},
+                    "answer": [{"type": "A", "value": "93.184.216.34", "ttl": 120}],
+                    "cached": True,
+                    "time": "2026-10-12T17:57:00Z",
+                },
+                {
+                    "client": "192.168.1.50",
+                    "question": {"class": "IN", "name": "ads.example.net", "type": "A"},
+                    "answer": [{"type": "A", "value": "0.0.0.0", "ttl": 10}],
+                    "reason": "FilteredBlackList",
+                    "time": "2026-10-12T17:56:00Z",
+                },
+                {
+                    "client": "192.168.1.50",
+                    "question": {"class": "IN", "name": "cached.example.org.", "type": "A"},
+                    "answer": None,
+                    "time": "2026-10-12T17:55:00Z",
+                },
+                {"client": "", "question": {"name": "nobody.example"}, "answer": []},
+                {"client": "192.168.1.51", "question": {"name": ""}, "answer": []},
+            ],
+        }
         self.access = {
             "allowed_clients": [],
             "disallowed_clients": [],
@@ -114,6 +160,7 @@ class FakeAdGuard:
                 "/control/filtering/status": lambda: self.filtering,
                 "/control/clients": lambda: self.clients,
                 "/control/access/list": lambda: self.access,
+                "/control/querylog": lambda: self.querylog,
             }
             if path not in routes:
                 return httpx.Response(404, text="404 page not found")

@@ -13,6 +13,14 @@ when the network's DHCP hands out AdGuard Home as its DNS server.
 | DNS rewrites whose answer is an IPv4 address | The network's local names (`nas.home.arpa → 192.168.1.20`); wildcards, CNAMEs and IPv6 answers are left out |
 | DHCP server, when it is on: leases, static leases, range, local domain | Clients and their addresses, fixed addresses, pool usage |
 | DNS and DHCP running | Services in the device's panel |
+| The query log's last 1000 entries: which client asked for which name, and the A/AAAA addresses answered | Naming where devices go in traffic flows (address → name) |
+
+The query log gives at most 500 lookups, one per client and name (newest
+first), with every address it was answered (a blocked answer's `0.0.0.0` is
+left out). Omini uses them only to name the destinations of traffic flows and
+keeps them in memory, never on disk. With the query log off, or when it cannot
+be read, the rest is collected as usual; an Omini older than 1.6 does not ask
+for it.
 
 ## What it changes
 
@@ -39,7 +47,8 @@ AdGuard Home's API never returns its users' password hashes.
 AdGuard Home has one kind of user: the users of its web interface (`users:` in
 `AdGuardHome.yaml`), all with full access. Use one of them, or add a user for
 Omini to `AdGuardHome.yaml` (`name` and a bcrypt `password` hash, e.g.
-`htpasswd -B -C 10 -n omini`) and restart AdGuard Home. Requests use HTTP basic
+`htpasswd -B -C 10 -n omini`) and restart AdGuard Home. That user can read the
+query log too (AdGuard Home has no read-only role). Requests use HTTP basic
 authentication; prefer HTTPS when AdGuard Home has it.
 
 ## Endpoints
@@ -51,6 +60,7 @@ authentication; prefer HTTPS when AdGuard Home has it.
 | POST | `/control/rewrite/add` | `dns.set` (new name) |
 | PUT | `/control/rewrite/update` | `dns.set` (same name, other address); older versions: delete + add |
 | POST | `/control/rewrite/delete` | `dns.delete`, duplicates |
+| GET | `/control/querylog?limit=1000` | Recent DNS lookups |
 | GET | `/control/dhcp/status` | DHCP leases, static leases, range; backup |
 | GET | `/control/dns_info`, `/control/filtering/status`, `/control/clients`, `/control/access/list` | Backup |
 
@@ -65,6 +75,8 @@ against a fake API and the Omini devnet emulator only:
 - `local_domain_name` in `/control/dhcp/status`: read as the local domain when
   present; otherwise the domain is left empty.
 - The 401 (or 403) answer for wrong credentials.
+- The query log's `client` as the client's address (it is the address unless
+  `anonymize_client_ip` is on, then a partly zeroed address).
 
 ## Development
 
