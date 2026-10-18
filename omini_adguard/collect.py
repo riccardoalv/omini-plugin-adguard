@@ -351,8 +351,10 @@ def set_name(c: Client, name: str, ip: str) -> None:
         c.post("/control/rewrite/delete", entry(first))
         try:
             c.post("/control/rewrite/add", new)
-        except PluginError:
+        except (PluginError, NotFound) as e:
             c.post("/control/rewrite/add", entry(first))
+            if isinstance(e, NotFound):
+                raise PluginError(f"AdGuard Home has no {e}") from e
             raise
     for r in rest:
         c.post("/control/rewrite/delete", entry(r))

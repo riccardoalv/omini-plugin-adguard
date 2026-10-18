@@ -215,6 +215,21 @@ def test_dns_set_puts_the_old_one_back_when_the_add_is_refused(adguard, cfg):
     assert {"domain": "nas.home.arpa", "answer": "192.168.1.20"} in adguard.rewrites
 
 
+def test_dns_set_puts_the_old_one_back_when_the_add_answers_404(adguard, cfg):
+    adguard.has_update = False
+
+    def handler(request):
+        # The add of the new answer is not found; the restore goes through.
+        if request.url.path == "/control/rewrite/add" and b"192.168.1.25" in request.content:
+            return httpx.Response(404, text="404 page not found")
+        return adguard.handler(request)
+
+    adguard.hook = handler
+    with pytest.raises(PluginError, match="has no /control/rewrite/add"):
+        apply(cfg, change("dns.set", {"name": "nas.home.arpa", "ip": "192.168.1.25"}))
+    assert {"domain": "nas.home.arpa", "answer": "192.168.1.20"} in adguard.rewrites
+
+
 def test_dns_set_merges_duplicates(adguard, cfg):
     adguard.rewrites.append({"domain": "nas.home.arpa", "answer": "192.168.1.99"})
     apply(cfg, change("dns.set", {"name": "nas.home.arpa", "ip": "192.168.1.20"}))
