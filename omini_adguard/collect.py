@@ -118,6 +118,43 @@ def own_ips(status: dict[str, Any], host: str) -> list[str]:
     return out
 
 
+def same_ip(a: Any, b: str) -> bool:
+    try:
+        return ipaddress.ip_address(str(a).split("/")[0].strip()) == ipaddress.ip_address(b)
+    except ValueError:
+        return False
+
+
+def own_mac(c: Client, host: str) -> str | None:
+    """The MAC of the interface that holds the address Omini reaches AdGuard
+    Home at, else of the first other one (GET /control/dhcp/interfaces, which
+    builds without a DHCP server lack): the device's key, so it merges with the
+    machine it runs on. Among the others, one with an address comes first."""
+    try:
+        got = c.get("/control/dhcp/interfaces")
+    except (NotFound, PluginError) as e:
+        log.debug("interfaces not read: %s", e)
+        return None
+    if not isinstance(got, dict):
+        return None
+    first: str | None = None
+    bare: str | None = None  # without any address
+    for name, iface in sorted(got.items()):
+        if not isinstance(iface, dict) or name == "lo" or "loopback" in str(iface.get("flags")):
+            continue
+        m = mac(iface.get("hardware_address"))
+        if not m:
+            continue
+        addrs = [*(iface.get("ipv4_addresses") or []), *(iface.get("ipv6_addresses") or [])]
+        if any(same_ip(a, host) for a in addrs):
+            return m
+        if addrs:
+            first = first or m
+        else:
+            bare = bare or m
+    return first or bare
+
+
 def rewrites(c: Client) -> list[dict[str, Any]]:
     rows = c.get("/control/rewrite/list")
     return [r for r in rows or [] if isinstance(r, dict)]
@@ -278,14 +315,16 @@ def read(c: Client, host: str) -> Device:
                 enabled=dhcp_on,
             )
         )
+    m = own_mac(c, host)
     dev = Device(
-        key=host,
+        key=m or host,
         name="AdGuard Home",
         host=host,
         role="server",
         vendor="AdGuard",
         model="AdGuard Home",
         os_version=version(status),
+        macs=[m] if m else None,
         ips=own_ips(status, host) or None,
         dns_records=records(rows),
         services=services,
@@ -465,8 +504,10 @@ def settings(c: Client) -> dict[str, Any]:
 def backup(cfg: Config) -> list[ConfigBackup]:
     c = client_from(cfg)
     try:
+        host = host_of(cfg)
+        m = own_mac(c, host)
         data = settings(c)
     finally:
         c.close()
     content = json.dumps(data, sort_keys=True, indent=2, ensure_ascii=False)
-    return [ConfigBackup(device=host_of(cfg), format="json", content=content + "\n")]
+    return [ConfigBackup(device=m or host, format="json", content=content + "\n")]

@@ -5,11 +5,11 @@ protocol: 1
 entrypoint: main.py
 timeout_s: 60
 description: >-
-  AdGuard Home DNS servers through their web API: the server and its version,
-  its local DNS names (DNS rewrites), its DHCP server's leases, fixed
-  addresses and pool usage when it is on, and recent lookups from its query
-  log (to name where devices go). Omini creates, changes and removes
-  local DNS names on it.
+  AdGuard Home DNS servers through their web API: the server (keyed by its
+  MAC) and its version, its local DNS names (DNS rewrites), its DHCP
+  server's leases, fixed addresses and pool usage when it is on, and recent
+  lookups from its query log (to name where devices go). Omini creates,
+  changes and removes local DNS names on it.
 author: Omini
 homepage: https://github.com/riccardoalv/omini-plugin-adguard
 changes:

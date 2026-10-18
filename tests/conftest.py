@@ -139,6 +139,25 @@ class FakeAdGuard:
                 {"client": "192.168.1.51", "question": {"name": ""}, "answer": []},
             ],
         }
+        # GET /control/dhcp/interfaces: NetInterfaces, a map by name (Go sorts
+        # the keys); loopback and interfaces without broadcast are left out.
+        self.interfaces = {
+            "docker0": {
+                "name": "docker0",
+                "hardware_address": "02:42:5e:6f:70:81",
+                "flags": "up|broadcast|multicast",
+                "ipv4_addresses": ["172.17.0.1"],
+                "ipv6_addresses": [],
+            },
+            "eth0": {
+                "name": "eth0",
+                "hardware_address": "dc:a6:32:11:22:33",
+                "flags": "up|broadcast|multicast|running",
+                "gateway_ip": "192.168.1.1",
+                "ipv4_addresses": ["192.168.1.53"],
+                "ipv6_addresses": ["2001:db8:1::53", "fe80::dea6:32ff:fe11:2233"],
+            },
+        }
         self.access = {
             "allowed_clients": [],
             "disallowed_clients": [],
@@ -161,6 +180,7 @@ class FakeAdGuard:
                 "/control/clients": lambda: self.clients,
                 "/control/access/list": lambda: self.access,
                 "/control/querylog": lambda: self.querylog,
+                "/control/dhcp/interfaces": lambda: self.interfaces,
             }
             if path not in routes:
                 return httpx.Response(404, text="404 page not found")

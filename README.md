@@ -10,6 +10,7 @@ when the network's DHCP hands out AdGuard Home as its DNS server.
 | Data | Used for |
 |---|---|
 | Version, the addresses it answers DNS on | The server on the map (vendor AdGuard, model AdGuard Home), merged by address with the machine it runs on |
+| The MAC of its network interface (`/control/dhcp/interfaces`): the one holding the address Omini reaches it at (IPv4 or IPv6), else the first other one with an address | The device's key, so it merges with the machine it runs on, as Pi-hole does; without it (no DHCP support in the build, or a refused read) the address is the key |
 | DNS rewrites whose answer is an IPv4 address | The network's local names (`nas.home.arpa → 192.168.1.20`); wildcards, CNAMEs and IPv6 answers are left out |
 | DHCP server, when it is on: leases, static leases, range, local domain | Clients and their addresses, fixed addresses, pool usage |
 | DNS and DHCP running | Services in the device's panel |
@@ -22,6 +23,13 @@ clients without an address. Omini uses them only to name the destinations of
 traffic flows and keeps them in memory, never on disk. With the query log off,
 or when it cannot be read, the rest is collected as usual; an Omini older than
 1.6 does not ask for it.
+
+Omini never asks AdGuard Home to check for updates (`/control/version.json`
+is not called), so pending updates are not shown.
+
+Since this version the device's key is its MAC instead of the address typed
+in the form: an AdGuard Home added before gets a new node in Omini once, and
+the history of its old node (keyed by the address) is not carried over.
 
 ## What it changes
 
@@ -63,6 +71,7 @@ authentication; prefer HTTPS when AdGuard Home has it.
 | POST | `/control/rewrite/delete` | `dns.delete`, duplicates |
 | GET | `/control/querylog?limit=1000` | Recent DNS lookups |
 | GET | `/control/dhcp/status` | DHCP leases, static leases, range; backup |
+| GET | `/control/dhcp/interfaces` | The MAC (the device's key) |
 | GET | `/control/dns_info`, `/control/filtering/status`, `/control/clients`, `/control/access/list` | Backup |
 
 ## Not verified on hardware
@@ -77,6 +86,9 @@ against a fake API and the Omini devnet emulator only:
   update, and checks that it is on.
 - `local_domain_name` in `/control/dhcp/status`: read as the local domain when
   present; otherwise the domain is left empty.
+- `/control/dhcp/interfaces` as a map of `NetInterface` (`hardware_address`,
+  `flags`, `ipv4_addresses`, `ipv6_addresses`); loopback interfaces and
+  those without a MAC are skipped.
 - The 401 (or 403) answer for wrong credentials.
 - The query log's `client` as the client's address (it is the address unless
   `anonymize_client_ip` is on, then a partly zeroed address).

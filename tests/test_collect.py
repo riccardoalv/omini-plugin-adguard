@@ -11,9 +11,11 @@ import omini_adguard.collect as collect_module
 from omini_adguard.collect import apply, backup, collect
 from omini_adguard.collect import test as check
 
+MAC = "dc:a6:32:11:22:33"
+
 
 def change(kind, value):
-    return Change(device="192.168.1.53", kind=kind, value=value)
+    return Change(device=MAC, kind=kind, value=value)
 
 
 def names(dev):
@@ -22,7 +24,9 @@ def names(dev):
 
 def test_collect_reads_the_server(adguard, cfg):
     [dev] = collect(cfg)
-    assert dev.key == "192.168.1.53" and dev.host == "192.168.1.53"
+    # Keyed by the MAC of the interface holding its address, like Pi-hole.
+    assert dev.key == MAC and dev.host == "192.168.1.53"
+    assert [m.root for m in dev.macs] == [MAC]
     assert (dev.name, dev.role, dev.vendor, dev.model) == (
         "AdGuard Home",
         "server",
@@ -186,7 +190,41 @@ def test_address_without_scheme(adguard):
     [dev] = collect(
         Config({"url": "adguard.lan:3000", "username": "omini", "password": "s3cret-pass"})
     )
-    assert dev.key == "adguard.lan"
+    # A name, not an address: the first interface with an address.
+    assert dev.key == "02:42:5e:6f:70:81"
+
+
+def test_key_by_an_ipv6_address(adguard):
+    [dev] = collect(
+        Config(
+            {"url": "http://[2001:db8:1::53]:3000", "username": "omini", "password": "s3cret-pass"}
+        )
+    )
+    assert dev.key == MAC and dev.host == "2001:db8:1::53"
+
+
+def test_key_skips_loopback_and_interfaces_without_a_mac(adguard, cfg):
+    adguard.interfaces = {
+        "lo": {"name": "lo", "hardware_address": "", "flags": "up|loopback"},
+        "tun0": {"name": "tun0", "hardware_address": "", "ipv4_addresses": ["10.8.0.1"]},
+        "wlan0": {"name": "wlan0", "hardware_address": "DC:A6:32:11:22:44", "flags": "broadcast"},
+    }
+    [dev] = collect(cfg)
+    assert dev.key == "dc:a6:32:11:22:44"
+
+
+@pytest.mark.parametrize("status", [403, 404, 500])
+def test_without_the_interfaces_the_address_is_the_key(adguard, cfg, status):
+    def handler(request):
+        if request.url.path == "/control/dhcp/interfaces":
+            return httpx.Response(status, text="no")
+        return adguard.handler(request)
+
+    adguard.hook = handler
+    [dev] = collect(cfg)
+    assert dev.key == "192.168.1.53" and dev.macs is None
+    assert names(dev)  # the rest is read as usual
+    assert backup(cfg)[0].device == "192.168.1.53"
 
 
 # -- dns.set / dns.delete --
@@ -398,7 +436,7 @@ def test_dns_delete(adguard, cfg):
 
 def test_backup_is_sorted_json_without_live_state(adguard, cfg):
     [b] = backup(cfg)
-    assert (b.device, b.format) == ("192.168.1.53", "json")
+    assert (b.device, b.format) == (MAC, "json")
     data = json.loads(b.content)
     assert set(data) == {"status", "rewrites", "dns", "filtering", "clients", "dhcp", "access"}
     assert "running" not in data["status"] and "start_time" not in data["status"]
@@ -429,4 +467,4 @@ def test_plugin_runtime(adguard, cfg):
     assert isinstance(plugin, Plugin)
     req = {"protocol": 1, "action": "backup", "config": dict(cfg)}
     out, code = plugin.handle(json.dumps(req))
-    assert code == 0 and out["backups"][0]["device"] == "192.168.1.53"
+    assert code == 0 and out["backups"][0]["device"] == MAC
