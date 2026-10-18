@@ -69,18 +69,43 @@ def test_collect_reads_the_query_log(adguard, cfg):
     [dev] = collect(cfg)
     assert ("GET", "/control/querylog") in adguard.calls
     # One per client and name, newest first, with the union of A/AAAA answers;
-    # a blocked answer (0.0.0.0) has no address, nor does one without answer.
+    # one without answer has no address. Blocked queries reached nothing.
     assert lookups(dev) == [
         ("192.168.1.42", "example.com", ["93.184.216.34", "2606:2800:220:1::248"]),
-        ("192.168.1.50", "ads.example.net", None),
         ("192.168.1.50", "cached.example.org", None),
     ]
 
 
-def test_collect_caps_the_lookups(adguard, cfg, monkeypatch):
-    monkeypatch.setattr(collect_module, "MAX_LOOKUPS", 2)
+@pytest.mark.parametrize(
+    "reason",
+    ["FilteredBlackList", "FilteredSafeBrowsing", "FilteredParental", "FilteredBlockedService"],
+)
+def test_collect_leaves_blocked_queries_out(adguard, cfg, reason):
+    adguard.querylog["data"] = [
+        {
+            "client": "192.168.1.60",
+            "question": {"name": "tracker.example", "type": "A"},
+            "answer": [{"type": "A", "value": "203.0.113.9", "ttl": 10}],
+            "reason": reason,
+        }
+    ]
     [dev] = collect(cfg)
-    assert [d for _, d, _ in lookups(dev)] == ["example.com", "ads.example.net"]
+    assert dev.dns_lookups is None
+
+
+@pytest.mark.parametrize("client", ["0.0.0.0", "::", "not-an-address"])
+def test_collect_leaves_hidden_clients_out(adguard, cfg, client):
+    adguard.querylog["data"] = [
+        {"client": client, "question": {"name": "example.com", "type": "A"}, "answer": []}
+    ]
+    [dev] = collect(cfg)
+    assert dev.dns_lookups is None
+
+
+def test_collect_caps_the_lookups(adguard, cfg, monkeypatch):
+    monkeypatch.setattr(collect_module, "MAX_LOOKUPS", 1)
+    [dev] = collect(cfg)
+    assert [d for _, d, _ in lookups(dev)] == ["example.com"]
 
 
 def test_collect_asks_for_a_thousand_entries(adguard, cfg):

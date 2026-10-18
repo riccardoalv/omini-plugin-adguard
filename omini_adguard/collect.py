@@ -155,15 +155,22 @@ def answer_ips(row: dict[str, Any]) -> list[str]:
 
 def lookups(rows: list[Any]) -> list[Any]:
     """One lookup per client and name, newest first (the log's order), with
-    every address it was answered."""
+    every address it was answered, without blocked queries (nothing was
+    reached) or clients without an address."""
     found: dict[tuple[str, str], list[str]] = {}
     for row in rows:
         if not isinstance(row, dict):
             continue
-        client = str(row.get("client") or "").strip()
-        domain = dns_name((row.get("question") or {}).get("name"))
-        if not client or not domain:
+        if str(row.get("reason") or "").startswith("Filtered"):
             continue
+        domain = dns_name((row.get("question") or {}).get("name"))
+        try:
+            ip = ipaddress.ip_address(str(row.get("client") or "").strip())
+        except ValueError:
+            continue
+        if ip.is_unspecified or not domain:
+            continue
+        client = str(ip)
         key = (client, domain)
         if key not in found:
             if len(found) >= MAX_LOOKUPS:

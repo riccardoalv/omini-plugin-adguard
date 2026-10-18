@@ -16,11 +16,12 @@ when the network's DHCP hands out AdGuard Home as its DNS server.
 | The query log's last 1000 entries: which client asked for which name, and the A/AAAA addresses answered | Naming where devices go in traffic flows (address → name) |
 
 The query log gives at most 500 lookups, one per client and name (newest
-first), with every address it was answered (a blocked answer's `0.0.0.0` is
-left out). Omini uses them only to name the destinations of traffic flows and
-keeps them in memory, never on disk. With the query log off, or when it cannot
-be read, the rest is collected as usual; an Omini older than 1.6 does not ask
-for it.
+first), with every address it was answered (`0.0.0.0` and `::` left out),
+without blocked queries (a `Filtered...` reason: nothing was reached) and
+clients without an address. Omini uses them only to name the destinations of
+traffic flows and keeps them in memory, never on disk. With the query log off,
+or when it cannot be read, the rest is collected as usual; an Omini older than
+1.6 does not ask for it.
 
 ## What it changes
 
