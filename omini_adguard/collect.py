@@ -82,7 +82,7 @@ def mac(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
     hexdigits = "".join(ch for ch in value.lower() if ch in "0123456789abcdef")
-    if len(hexdigits) != 12:
+    if len(hexdigits) != 12 or hexdigits == "0" * 12:
         return None
     return ":".join(hexdigits[i : i + 2] for i in range(0, 12, 2))
 
@@ -328,7 +328,7 @@ def value_of(change: Change) -> dict[str, Any]:
 
 def wanted_name(v: dict[str, Any]) -> str:
     name = dns_name(v.get("name"))
-    if not name or "*" in name or " " in name:
+    if not name or "*" in name or any(ch.isspace() for ch in name) or "," in name:
         raise PluginError("a local DNS name is required, e.g. nas.home.arpa")
     return name
 

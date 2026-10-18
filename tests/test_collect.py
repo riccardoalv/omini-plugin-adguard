@@ -351,6 +351,21 @@ def test_dns_set_refuses_bad_values(adguard, cfg):
     assert adguard.writes() == []
 
 
+@pytest.mark.parametrize("name", ["nas\thome.arpa", "nas\nhome.arpa", "nas,home.arpa"])
+def test_dns_set_refuses_names_with_whitespace_or_commas(adguard, cfg, name):
+    with pytest.raises(PluginError, match="name is required"):
+        apply(cfg, change("dns.set", {"name": name, "ip": "192.168.1.2"}))
+    assert adguard.writes() == []
+
+
+def test_collect_leaves_all_zero_macs_out(adguard, cfg):
+    adguard.dhcp["leases"].append({"mac": "00:00:00:00:00:00", "ip": "192.168.1.150"})
+    adguard.dhcp["static_leases"].append({"mac": "00-00-00-00-00-00", "ip": "192.168.1.151"})
+    [dev] = collect(cfg)
+    assert "192.168.1.150" not in [lease.ip for lease in dev.dhcp_leases]
+    assert "192.168.1.151" not in [r.ip for r in dev.dhcp_reservations]
+
+
 def test_dns_set_refused_by_the_server(adguard, cfg):
     adguard.refuse.add("/control/rewrite/add")
     with pytest.raises(PluginError, match="invalid rewrite"):
