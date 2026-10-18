@@ -36,8 +36,12 @@ def test_collect_reads_the_server(adguard, cfg):
     assert dev.os_version == "0.107.57"
     # Loopback and link-local addresses are not the server's addresses on the network.
     assert dev.ips == ["192.168.1.53"]
-    # Only exact names answered with an IPv4 address: no wildcard, CNAME or IPv6.
-    assert names(dev) == [("nas.home.arpa", "192.168.1.20"), ("printer.home.arpa", "192.168.1.30")]
+    # Exact names answered with an address, IPv4 or IPv6: no wildcard or CNAME.
+    assert names(dev) == [
+        ("nas.home.arpa", "192.168.1.20"),
+        ("printer.home.arpa", "192.168.1.30"),
+        ("v6.home.arpa", "fd00::20"),
+    ]
     assert [(s.name, s.running, s.enabled) for s in dev.services] == [
         ("DNS", True, True),
         ("DHCP", True, True),
@@ -183,7 +187,7 @@ def test_wrong_password(adguard, cfg):
 
 
 def test_test_returns_the_version(adguard, cfg):
-    assert check(cfg) == "Connected to AdGuard Home 0.107.57, 2 local names"
+    assert check(cfg) == "Connected to AdGuard Home 0.107.57, 3 local names"
 
 
 def test_address_without_scheme(adguard):
@@ -332,6 +336,7 @@ def test_dns_delete_leaves_ipv6_and_cname_rewrites_alone(adguard, cfg):
     adguard.rewrites[:0] = OTHERS
     [dev] = apply(cfg, change("dns.delete", {"name": "nas.home.arpa"}))
     assert ("nas.home.arpa", "192.168.1.20") not in names(dev)
+    assert ("nas.home.arpa", "fd00::20") in names(dev)  # still read, never deleted
     assert [r for r in adguard.rewrites if r["domain"] == "nas.home.arpa"] == OTHERS
 
 
@@ -424,7 +429,7 @@ def test_dns_set_not_kept_fails_the_verification(adguard, cfg):
 
 def test_dns_delete(adguard, cfg):
     [dev] = apply(cfg, change("dns.delete", {"name": "printer.home.arpa"}))
-    assert names(dev) == [("nas.home.arpa", "192.168.1.20")]
+    assert names(dev) == [("nas.home.arpa", "192.168.1.20"), ("v6.home.arpa", "fd00::20")]
     # A name that is not there: nothing to do.
     adguard.calls.clear()
     apply(cfg, change("dns.delete", {"name": "printer.home.arpa"}))
@@ -468,3 +473,56 @@ def test_plugin_runtime(adguard, cfg):
     req = {"protocol": 1, "action": "backup", "config": dict(cfg)}
     out, code = plugin.handle(json.dumps(req))
     assert code == 0 and out["backups"][0]["device"] == MAC
+
+
+def test_ipv6_rewrites_are_read_as_records(adguard, cfg):
+    adguard.rewrites += [
+        {"domain": "nas.home.arpa", "answer": "2001:DB8:0:0::20"},  # AAAA beside the A
+        {"domain": "blocked.home.arpa", "answer": "::"},  # a block, not an address
+        {"domain": "off.home.arpa", "answer": "fd00::9", "enabled": False},
+    ]
+    [dev] = collect(cfg)
+    assert names(dev) == [
+        ("nas.home.arpa", "192.168.1.20"),  # IPv4 first
+        ("nas.home.arpa", "2001:db8::20"),  # in its short form
+        ("printer.home.arpa", "192.168.1.30"),
+        ("v6.home.arpa", "fd00::20"),
+    ]
+
+
+def test_dns_set_on_a_name_with_only_an_ipv6_answer_adds_the_ipv4_one(adguard, cfg):
+    [dev] = apply(cfg, change("dns.set", {"name": "v6.home.arpa", "ip": "192.168.1.60"}))
+    assert [r["answer"] for r in adguard.rewrites if r["domain"] == "v6.home.arpa"] == [
+        "fd00::20",
+        "192.168.1.60",
+    ]
+    assert ("v6.home.arpa", "fd00::20") in names(dev)
+
+
+def test_dhcpv6_leases_are_read(adguard, cfg):
+    adguard.dhcp["v6"]["range_start"] = "2001:db8:1::100"
+    # AdGuard Home lists DHCPv6 leases with the IPv4 ones.
+    adguard.dhcp["leases"] += [
+        {"mac": "aa:bb:cc:dd:ee:01", "ip": "2001:DB8:1::101", "hostname": "laptop", "expires": ""},
+        {"mac": "aa:bb:cc:dd:ee:03", "ip": "fe80::3", "hostname": "", "expires": ""},
+    ]
+    # A v6 section with its own leases is read too, each address once.
+    adguard.dhcp["v6"]["leases"] = [
+        {"mac": "aa:bb:cc:dd:ee:04", "ip": "fd00::104", "hostname": "tv", "expires": ""},
+        {"mac": "aa:bb:cc:dd:ee:01", "ip": "2001:db8:1::101", "hostname": "laptop", "expires": ""},
+    ]
+    [dev] = collect(cfg)
+    assert [(lease.ip, lease.mac, lease.hostname) for lease in dev.dhcp_leases] == [
+        ("192.168.1.101", "aa:bb:cc:dd:ee:01", "laptop"),
+        ("192.168.1.102", "aa:bb:cc:dd:ee:02", None),
+        ("2001:db8:1::101", "aa:bb:cc:dd:ee:01", "laptop"),
+        ("fd00::104", "aa:bb:cc:dd:ee:04", "tv"),
+    ]
+    # The pool is the IPv4 range: the DHCPv6 leases are not counted in it.
+    assert dev.dhcp_pools[0].used == 2
+
+
+def test_backup_leaves_dhcpv6_leases_out(adguard, cfg):
+    adguard.dhcp["v6"]["leases"] = [{"mac": "aa:bb:cc:dd:ee:04", "ip": "fd00::104"}]
+    [b] = backup(cfg)
+    assert "fd00::104" not in b.content

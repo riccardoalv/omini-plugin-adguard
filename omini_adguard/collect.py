@@ -1,4 +1,4 @@
-"""AdGuard Home: the server itself, its local DNS names (rewrites), its DHCP
+"""AdGuard Home: the server itself, its local DNS names (rewrites, A and AAAA), its DHCP
 server's leases and fixed addresses, and the dns.set / dns.delete changes."""
 
 from __future__ import annotations
@@ -94,6 +94,25 @@ def ipv4(value: Any) -> str | None:
         return None
 
 
+def ipv6(value: Any) -> str | None:
+    """An IPv6 address in its short form; :: (a blocked answer) is none."""
+    try:
+        ip = ipaddress.IPv6Address(str(value).strip())
+    except ValueError:
+        return None
+    return None if ip.is_unspecified else str(ip)
+
+
+def lease_ip(value: Any) -> str | None:
+    """A lease's address: IPv4, or a global or ULA IPv6 (DHCPv6)."""
+    if ip := ipv4(value):
+        return ip
+    ip6 = ipv6(value)
+    if ip6 is None or ipaddress.IPv6Address(ip6).is_link_local:
+        return None
+    return ip6
+
+
 def dns_name(value: Any) -> str:
     return str(value or "").strip().rstrip(".").lower()
 
@@ -162,15 +181,18 @@ def rewrites(c: Client) -> list[dict[str, Any]]:
 
 def records(rows: list[dict[str, Any]]) -> list[DnsRecord]:
     """The rewrites that are local names: an exact name answered with an IPv4
-    address (wildcards, CNAMEs and IPv6 answers are left out)."""
-    out: dict[tuple[str, str], DnsRecord] = {}
+    (A) or IPv6 (AAAA) address; wildcards and CNAMEs are left out. Per name,
+    IPv4 first. The IPv6 ones are only read: dns.set and dns.delete manage
+    the IPv4 ones."""
+    out: dict[tuple[str, bool, str], DnsRecord] = {}
     for r in rows:
         if r.get("enabled") is False:
             continue
-        name, ip = dns_name(r.get("domain")), ipv4(r.get("answer"))
+        name, answer = dns_name(r.get("domain")), r.get("answer")
+        ip = ipv4(answer) or ipv6(answer)
         if not name or not ip or "*" in name:
             continue
-        out[(name, ip)] = DnsRecord(name=name, ip=ip)
+        out[(name, ":" in ip, ip)] = DnsRecord(name=name, ip=ip)
     return [out[k] for k in sorted(out)]
 
 
@@ -241,10 +263,17 @@ def when(value: Any) -> datetime | None:
 
 
 def leases(dhcp: dict[str, Any]) -> list[DhcpLease]:
-    out = []
-    for row in dhcp.get("leases") or []:
-        m, ip = mac(row.get("mac")), ipv4(row.get("ip"))
-        if m and ip:
+    """IPv4 and DHCPv6 leases: AdGuard Home lists both in `leases`; a v6
+    section with its own `leases` is read too. Each address once."""
+    out: list[DhcpLease] = []
+    v6 = dhcp.get("v6") if isinstance(dhcp.get("v6"), dict) else {}
+    seen: set[str] = set()
+    for row in [*(dhcp.get("leases") or []), *(v6.get("leases") or [])]:
+        if not isinstance(row, dict):
+            continue
+        m, ip = mac(row.get("mac")), lease_ip(row.get("ip"))
+        if m and ip and ip not in seen:
+            seen.add(ip)
             out.append(
                 DhcpLease(
                     ip=ip,
@@ -278,7 +307,9 @@ def pool(dhcp: dict[str, Any], used: list[DhcpLease]) -> DhcpPool | None:
     if gw and mask:
         with contextlib.suppress(ValueError):
             network = str(ipaddress.IPv4Network(f"{gw}/{mask}", strict=False))
-    in_range = sum(1 for lease in used if lo <= ipaddress.IPv4Address(lease.ip) <= hi)
+    in_range = sum(
+        1 for lease in used if ipv4(lease.ip) and lo <= ipaddress.IPv4Address(lease.ip) <= hi
+    )
     return DhcpPool(network=network, total=int(hi) - int(lo) + 1, used=in_range)
 
 
@@ -492,6 +523,8 @@ def settings(c: Client) -> dict[str, Any]:
         out["clients"] = sorted(cl.get("clients") or [], key=lambda x: str(x.get("name")))
     if (dhcp := optional(lambda: c.get("/control/dhcp/status"), None)) is not None:
         conf = without(dhcp, {"leases"})
+        if isinstance(conf.get("v6"), dict):  # leases are live state, not configuration
+            conf["v6"] = without(conf["v6"], {"leases"})
         conf["static_leases"] = sorted(
             conf.get("static_leases") or [], key=lambda x: (str(x.get("ip")), str(x.get("mac")))
         )

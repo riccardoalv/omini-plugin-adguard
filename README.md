@@ -11,8 +11,8 @@ when the network's DHCP hands out AdGuard Home as its DNS server.
 |---|---|
 | Version, the addresses it answers DNS on | The server on the map (vendor AdGuard, model AdGuard Home), merged by address with the machine it runs on |
 | The MAC of its network interface (`/control/dhcp/interfaces`): the one holding the address Omini reaches it at (IPv4 or IPv6), else the first other one with an address | The device's key, so it merges with the machine it runs on, as Pi-hole does; without it (no DHCP support in the build, or a refused read) the address is the key |
-| DNS rewrites whose answer is an IPv4 address | The network's local names (`nas.home.arpa → 192.168.1.20`); wildcards, CNAMEs and IPv6 answers are left out |
-| DHCP server, when it is on: leases, static leases, range, local domain | Clients and their addresses, fixed addresses, pool usage |
+| DNS rewrites whose answer is an IPv4 or IPv6 address | The network's local names (`nas.home.arpa → 192.168.1.20`, `nas.home.arpa → fd00::20`); wildcards, CNAMEs and blocking answers (`::`) are left out. IPv6 answers are only read: `dns.set` and `dns.delete` manage the IPv4 ones |
+| DHCP server, when it is on: leases (IPv4 and DHCPv6; link-local addresses left out), static leases, range (IPv4), local domain | Clients and their addresses, fixed addresses, pool usage |
 | DNS and DHCP running | Services in the device's panel |
 | The query log's last 1000 entries: which client asked for which name, and the A/AAAA addresses answered | Naming where devices go in traffic flows (address → name) |
 
