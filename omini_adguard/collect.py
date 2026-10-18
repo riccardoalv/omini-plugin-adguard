@@ -327,7 +327,9 @@ def wanted_name(v: dict[str, Any]) -> str:
 
 
 def same(rows: list[dict[str, Any]], name: str) -> list[dict[str, Any]]:
-    return [r for r in rows if dns_name(r.get("domain")) == name]
+    """The rewrites of name answered with an IPv4 address: the ones dns.set and
+    dns.delete manage (IPv6 answers and CNAMEs of the name are left alone)."""
+    return [r for r in rows if dns_name(r.get("domain")) == name and ipv4(r.get("answer"))]
 
 
 def entry(r: dict[str, Any]) -> dict[str, Any]:

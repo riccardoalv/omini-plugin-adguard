@@ -238,6 +238,40 @@ def test_dns_set_merges_duplicates(adguard, cfg):
     ]
 
 
+OTHERS = [
+    {"domain": "nas.home.arpa", "answer": "fd00::20"},  # AAAA
+    {"domain": "nas.home.arpa", "answer": "storage.home.arpa"},  # CNAME
+]
+
+
+def test_dns_set_leaves_ipv6_and_cname_rewrites_alone(adguard, cfg):
+    adguard.rewrites[:0] = OTHERS  # before the A one, so they come first
+    [dev] = apply(cfg, change("dns.set", {"name": "nas.home.arpa", "ip": "192.168.1.25"}))
+    assert ("nas.home.arpa", "192.168.1.25") in names(dev)
+    assert [r for r in adguard.rewrites if r["domain"] == "nas.home.arpa"] == [
+        *OTHERS,
+        {"domain": "nas.home.arpa", "answer": "192.168.1.25"},
+    ]
+
+
+def test_dns_set_adds_beside_ipv6_and_cname_rewrites(adguard, cfg):
+    adguard.rewrites[:0] = [{**r, "domain": "new.home.arpa"} for r in OTHERS]
+    apply(cfg, change("dns.set", {"name": "new.home.arpa", "ip": "192.168.1.5"}))
+    assert [r["answer"] for r in adguard.rewrites if r["domain"] == "new.home.arpa"] == [
+        "fd00::20",
+        "storage.home.arpa",
+        "192.168.1.5",
+    ]
+    assert adguard.writes() == [("POST", "/control/rewrite/add")]
+
+
+def test_dns_delete_leaves_ipv6_and_cname_rewrites_alone(adguard, cfg):
+    adguard.rewrites[:0] = OTHERS
+    [dev] = apply(cfg, change("dns.delete", {"name": "nas.home.arpa"}))
+    assert ("nas.home.arpa", "192.168.1.20") not in names(dev)
+    assert [r for r in adguard.rewrites if r["domain"] == "nas.home.arpa"] == OTHERS
+
+
 def test_dns_set_already_there_changes_nothing(adguard, cfg):
     apply(cfg, change("dns.set", {"name": "nas.home.arpa", "ip": "192.168.1.20"}))
     assert adguard.writes() == []

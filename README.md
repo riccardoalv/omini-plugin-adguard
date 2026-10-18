@@ -26,8 +26,8 @@ for it.
 
 | Change | What it does |
 |---|---|
-| `dns.set` `{name, ip}` | Adds the rewrite `name → ip`; a rewrite with the same name and another address is updated (never duplicated), extra ones with that name are removed. Read again to check it took. |
-| `dns.delete` `{name}` | Removes every rewrite with that name. Read again to check. |
+| `dns.set` `{name, ip}` | Adds the rewrite `name → ip`; a rewrite with the same name and another IPv4 address is updated (never duplicated), extra IPv4 ones with that name are removed. IPv6 answers and CNAMEs of the name are left alone. Read again to check it took. |
+| `dns.delete` `{name}` | Removes the rewrites of that name answered with an IPv4 address (IPv6 answers and CNAMEs stay). Read again to check. |
 
 AdGuard Home saves its configuration by itself: there is no separate save step.
 Rewrites have no description field, so the ones Omini made are not marked.
