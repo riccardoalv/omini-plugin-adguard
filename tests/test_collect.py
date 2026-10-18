@@ -272,6 +272,45 @@ def test_dns_delete_leaves_ipv6_and_cname_rewrites_alone(adguard, cfg):
     assert [r for r in adguard.rewrites if r["domain"] == "nas.home.arpa"] == OTHERS
 
 
+def test_dns_set_switches_a_disabled_rewrite_on(adguard, cfg):
+    adguard.rewrites.append({"domain": "old.home.arpa", "answer": "192.168.1.9", "enabled": False})
+    [dev] = apply(cfg, change("dns.set", {"name": "old.home.arpa", "ip": "192.168.1.9"}))
+    assert ("old.home.arpa", "192.168.1.9") in names(dev)
+    assert adguard.rewrites[-1] == {
+        "domain": "old.home.arpa",
+        "answer": "192.168.1.9",
+        "enabled": True,
+    }
+
+
+def test_dns_set_changes_a_disabled_rewrite_and_switches_it_on(adguard, cfg):
+    adguard.rewrites.append({"domain": "old.home.arpa", "answer": "192.168.1.9", "enabled": False})
+    [dev] = apply(cfg, change("dns.set", {"name": "old.home.arpa", "ip": "192.168.1.8"}))
+    assert ("old.home.arpa", "192.168.1.8") in names(dev)
+    assert adguard.rewrites[-1]["enabled"] is True
+
+
+def test_dns_set_a_rewrite_left_disabled_fails_the_verification(adguard, cfg):
+    adguard.rewrites.append({"domain": "old.home.arpa", "answer": "192.168.1.9", "enabled": False})
+
+    def handler(request):
+        resp = adguard.handler(request)
+        if request.url.path == "/control/rewrite/update":
+            adguard.rewrites[-1]["enabled"] = False  # accepted, but still off
+        return resp
+
+    adguard.hook = handler
+    with pytest.raises(PluginError, match=r"did not keep old\.home\.arpa"):
+        apply(cfg, change("dns.set", {"name": "old.home.arpa", "ip": "192.168.1.8"}))
+
+
+def test_dns_delete_leaves_disabled_rewrites_alone(adguard, cfg):
+    off = {"domain": "nas.home.arpa", "answer": "192.168.1.9", "enabled": False}
+    adguard.rewrites.append(off)
+    apply(cfg, change("dns.delete", {"name": "nas.home.arpa"}))
+    assert [r for r in adguard.rewrites if r["domain"] == "nas.home.arpa"] == [off]
+
+
 def test_dns_set_already_there_changes_nothing(adguard, cfg):
     apply(cfg, change("dns.set", {"name": "nas.home.arpa", "ip": "192.168.1.20"}))
     assert adguard.writes() == []

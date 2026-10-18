@@ -26,8 +26,8 @@ for it.
 
 | Change | What it does |
 |---|---|
-| `dns.set` `{name, ip}` | Adds the rewrite `name → ip`; a rewrite with the same name and another IPv4 address is updated (never duplicated), extra IPv4 ones with that name are removed. IPv6 answers and CNAMEs of the name are left alone. Read again to check it took. |
-| `dns.delete` `{name}` | Removes the rewrites of that name answered with an IPv4 address (IPv6 answers and CNAMEs stay). Read again to check. |
+| `dns.set` `{name, ip}` | Adds the rewrite `name → ip`; a rewrite with the same name and another IPv4 address is updated (never duplicated), extra IPv4 ones with that name are removed; a disabled one is switched on. IPv6 answers and CNAMEs of the name are left alone. Read again to check it took. |
+| `dns.delete` `{name}` | Removes the enabled rewrites of that name answered with an IPv4 address (IPv6 answers, CNAMEs and disabled ones stay). Read again to check. |
 
 AdGuard Home saves its configuration by itself: there is no separate save step.
 Rewrites have no description field, so the ones Omini made are not marked.
@@ -71,7 +71,9 @@ against a fake API and the Omini devnet emulator only:
 
 - `PUT /control/rewrite/update` with `{target, update}` (newer versions); a
   404/405 falls back to delete + add.
-- The `enabled` field of rewrites (recent versions): disabled ones are skipped.
+- The `enabled` field of rewrites (recent versions): disabled ones are skipped;
+  `dns.set` on a name whose rewrite is disabled sends `enabled: true` in the
+  update, and checks that it is on.
 - `local_domain_name` in `/control/dhcp/status`: read as the local domain when
   present; otherwise the domain is left empty.
 - The 401 (or 403) answer for wrong credentials.

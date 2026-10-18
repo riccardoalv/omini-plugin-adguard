@@ -175,22 +175,28 @@ class FakeAdGuard:
             self.rewrites.append(row)
             return httpx.Response(200, text="OK")
         if method == "POST" and path == "/control/rewrite/delete":
-            row = {"domain": body["domain"], "answer": body["answer"]}
-            if row not in self.rewrites:
+            i = self.find(body)
+            if i is None:
                 return httpx.Response(400, text="rewrite not found")
-            self.rewrites.remove(row)
+            del self.rewrites[i]
             return httpx.Response(200, text="OK")
         if method == "PUT" and path == "/control/rewrite/update" and self.has_update:
-            target = {"domain": body["target"]["domain"], "answer": body["target"]["answer"]}
-            if target not in self.rewrites:
+            i = self.find(body["target"])
+            if i is None:
                 return httpx.Response(400, text="rewrite not found")
-            i = self.rewrites.index(target)
-            self.rewrites[i] = {
-                "domain": body["update"]["domain"],
-                "answer": body["update"]["answer"],
-            }
+            update = body["update"]
+            self.rewrites[i] = {"domain": update["domain"], "answer": update["answer"]} | (
+                {"enabled": update["enabled"]} if "enabled" in update else {}
+            )
             return httpx.Response(200, text="OK")
         return httpx.Response(405 if path.startswith("/control/") else 404, text="not allowed")
+
+    def find(self, target):
+        """The index of the rewrite with that domain and answer."""
+        for i, r in enumerate(self.rewrites):
+            if (r["domain"], r["answer"]) == (target["domain"], target["answer"]):
+                return i
+        return None
 
     def writes(self):
         return [c for c in self.calls if c[0] != "GET"]

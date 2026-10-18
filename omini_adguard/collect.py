@@ -332,20 +332,38 @@ def same(rows: list[dict[str, Any]], name: str) -> list[dict[str, Any]]:
     return [r for r in rows if dns_name(r.get("domain")) == name and ipv4(r.get("answer"))]
 
 
+def on(r: dict[str, Any]) -> bool:
+    """Whether AdGuard Home answers the rewrite (versions without the field: all)."""
+    return r.get("enabled") is not False
+
+
+def answered(rows: list[dict[str, Any]], name: str) -> list[str | None]:
+    """The IPv4 addresses AdGuard Home answers for name."""
+    return [ipv4(r.get("answer")) for r in same(rows, name) if on(r)]
+
+
 def entry(r: dict[str, Any]) -> dict[str, Any]:
     """A rewrite as the add/delete endpoints take it."""
     return {"domain": r.get("domain"), "answer": r.get("answer")}
 
 
 def set_name(c: Client, name: str, ip: str) -> None:
-    mine = same(rewrites(c), name)
-    if len(mine) == 1 and ipv4(mine[0].get("answer")) == ip and mine[0].get("enabled") is not False:
+    rows = rewrites(c)
+    if answered(rows, name) == [ip]:
         return
+    mine = same(rows, name)
     new = {"domain": name, "answer": ip}
     if not mine:
         c.post("/control/rewrite/add", new)
         return
-    first, rest = mine[0], mine[1:]
+    # The rewrite to keep: one with that address, else an answered one, else a
+    # disabled one, switched on (versions with the field).
+    first = next(
+        (r for r in mine if ipv4(r.get("answer")) == ip), next((r for r in mine if on(r)), mine[0])
+    )
+    if "enabled" in first:
+        new["enabled"] = True
+    rest = [r for r in mine if r is not first and on(r)]
     try:
         c.put("/control/rewrite/update", {"target": entry(first), "update": new})
     except NotFound:
@@ -363,8 +381,10 @@ def set_name(c: Client, name: str, ip: str) -> None:
 
 
 def delete_name(c: Client, name: str) -> None:
+    """Remove the rewrites AdGuard Home answers for name (disabled ones stay off)."""
     for r in same(rewrites(c), name):
-        c.post("/control/rewrite/delete", entry(r))
+        if on(r):
+            c.post("/control/rewrite/delete", entry(r))
 
 
 def apply(cfg: Config, change: Change) -> list[Device]:
@@ -377,14 +397,13 @@ def apply(cfg: Config, change: Change) -> list[Device]:
             if not ip:
                 raise PluginError("dns.set: the address must be an IPv4 address")
             set_name(c, name, ip)
-            got = same(rewrites(c), name)
-            if [ipv4(r.get("answer")) for r in got] != [ip]:
+            if answered(rewrites(c), name) != [ip]:
                 raise PluginError(f"AdGuard Home did not keep {name} → {ip}")
             log.info("AdGuard Home: %s set", name)
         elif kind == "dns.delete":
             name = wanted_name(v)
             delete_name(c, name)
-            if same(rewrites(c), name):
+            if answered(rewrites(c), name):
                 raise PluginError(f"AdGuard Home still answers {name}")
             log.info("AdGuard Home: %s deleted", name)
         else:
