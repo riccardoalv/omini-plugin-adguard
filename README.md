@@ -5,6 +5,20 @@ through its web API (`/control/...`). Omini uses it as the DNS server of a
 network: the local names Omini gives to devices with a fixed address go here
 when the network's DHCP hands out AdGuard Home as its DNS server.
 
+## Requirements
+
+- Omini 1.7 or later (the SDK with the plugin toolkit).
+- AdGuard Home v0.107 (see [Not verified on hardware](#not-verified-on-hardware)).
+
+## Form fields
+
+| Field | Example | Notes |
+|---|---|---|
+| Address | `http://192.168.1.53:3000` | Its web interface; `http://` is used when none is given |
+| Username / Password | `omini` | A user of its web interface (see [Account](#account)) |
+| Verify the TLS certificate (Advanced) | off | Turn it on if its HTTPS certificate is trusted |
+| Timeout, seconds (Advanced) | `15` | How long to wait for each answer (was a fixed 10 s); a refused connection or a busy server (429, 503) is asked again twice, after 1 and 2 s, and a read that times out once |
+
 ## What it reads
 
 | Data | Used for |
@@ -21,7 +35,9 @@ first), with every address it was answered (`0.0.0.0` and `::` left out),
 without blocked queries (a `Filtered...` reason: nothing was reached) and
 clients without an address. Omini uses them only to name the destinations of
 traffic flows and keeps them in memory, never on disk. With the query log off,
-or when it cannot be read, the rest is collected as usual; an Omini older than
+or when it cannot be read, the rest is collected as usual (so are the DHCP
+server, the interfaces and the backup's optional parts when they fail with a
+server error); an Omini older than
 1.6 does not ask for it.
 
 Omini never asks AdGuard Home to check for updates (`/control/version.json`
@@ -37,6 +53,12 @@ the history of its old node (keyed by the address) is not carried over.
 |---|---|
 | `dns.set` `{name, ip}` | Adds the rewrite `name → ip`; a rewrite with the same name and another IPv4 address is updated (never duplicated), extra IPv4 ones with that name are removed; a disabled one is switched on. IPv6 answers and CNAMEs of the name are left alone. Read again to check it took. |
 | `dns.delete` `{name}` | Removes the enabled rewrites of that name answered with an IPv4 address (IPv6 answers, CNAMEs and disabled ones stay). Read again to check. |
+
+Each change is read again (every 2 seconds, up to 30) until AdGuard Home
+answers the name as asked; one it does not show by then, or a change it
+refuses halfway (the add after a delete, on versions without the update
+endpoint), is put back as it was and the error ends "(undone)" (or "(could
+not be undone: check it in AdGuard Home)").
 
 AdGuard Home saves its configuration by itself: there is no separate save step.
 Rewrites have no description field, so the ones Omini made are not marked.

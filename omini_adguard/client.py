@@ -1,4 +1,5 @@
-"""Minimal client for AdGuard Home's HTTP API (``/control/...``).
+"""Client for AdGuard Home's HTTP API (``/control/...``), on the SDK's HTTP
+client: timeouts, retries, and errors that say what went wrong.
 
 Every request carries HTTP basic authentication with the web interface's
 username and password. Reads are ``GET`` and answer JSON; changes are
@@ -8,78 +9,63 @@ refused change answers 400 with the reason as plain text.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import httpx
-from omini_sdk import PluginError
+from omini_sdk.http import Client as HttpClient
+from omini_sdk.http import NotFound, Unauthorized
+
+__all__ = ["Client", "NotFound"]
+
+REJECTED = "AdGuard Home rejected the username or password (use the account of its web interface)"
 
 
-class NotFound(Exception):
-    """The endpoint does not exist on this version (404 or 405)."""
-
-
-class Client:
+class Client(HttpClient):
     def __init__(
         self,
         url: str,
         username: str,
         password: str,
         verify_tls: bool = False,
-        timeout: float = 10,
+        timeout: float = 15,
         transport: httpx.BaseTransport | None = None,
     ):
-        url = url.strip().rstrip("/")
-        if not url.startswith(("https://", "http://")):
-            url = "http://" + url
-        self.base = url
-        self.http = httpx.Client(
-            base_url=url,
-            verify=verify_tls,
+        super().__init__(
+            url,
+            name="AdGuard Home",
+            scheme="http",
+            verify_tls=verify_tls,
             timeout=timeout,
             auth=httpx.BasicAuth(username, password),
-            headers={"Accept": "application/json", "User-Agent": "omini-plugin-adguard"},
+            user_agent="omini-plugin-adguard",
+            unauthorized=REJECTED,
             transport=transport,
         )
 
-    def close(self) -> None:
-        self.http.close()
+    def check(self, r: httpx.Response, method: str, path: str) -> None:
+        """AdGuard Home answers 403 for a wrong password too, and 405 for an
+        endpoint this version lacks."""
+        where = {"status": r.status_code, "method": method, "resource": path}
+        if r.status_code == 403:
+            raise Unauthorized(REJECTED, **where)
+        if r.status_code == 405:
+            raise NotFound(f"AdGuard Home has no {path}", **where)
+        super().check(r, method, path)
 
-    def get(self, path: str) -> Any:
+    def get(self, path: str) -> Any:  # type: ignore[override]
         return self.request("GET", path)
 
-    def post(self, path: str, body: Any) -> Any:
-        return self.request("POST", path, body)
+    def post(self, path: str, body: Any) -> Any:  # type: ignore[override]
+        return self.request("POST", path, json=body)
 
-    def put(self, path: str, body: Any) -> Any:
-        return self.request("PUT", path, body)
+    def put(self, path: str, body: Any) -> Any:  # type: ignore[override]
+        return self.request("PUT", path, json=body)
 
-    def request(self, method: str, path: str, body: Any = None) -> Any:
-        try:
-            r = self.http.request(method, path, json=body)
-        except httpx.ConnectError as e:
-            raise PluginError(f"cannot connect to {self.base}: {e}") from e
-        except httpx.TimeoutException as e:
-            raise PluginError(f"{self.base} did not answer in time") from e
-        except httpx.HTTPError as e:
-            raise PluginError(f"request to {self.base} failed: {e}") from e
-        if r.status_code in (401, 403):
-            raise PluginError(
-                "AdGuard Home rejected the username or password (use the account of its web "
-                "interface)"
-            )
-        if r.status_code in (404, 405):
-            raise NotFound(path)
-        if r.status_code >= 400:
-            reason = r.text.strip() or f"HTTP {r.status_code}"
-            if method != "GET":
-                raise PluginError(f"AdGuard Home refused {method} {path}: {reason}")
-            raise PluginError(f"AdGuard Home answered {r.status_code} for {path}")
-        if method != "GET":
-            return None
-        try:
-            return r.json()
-        except json.JSONDecodeError as e:
-            raise PluginError(
-                f"{self.base} did not answer with JSON: is it AdGuard Home's web interface?"
-            ) from e
+    def request(self, method: str, path: str, **kw: Any) -> Any:
+        """A change answers "OK" (not JSON): None for it."""
+        method = method.upper()
+        if method == "GET":
+            return super().request(method, path, **kw)
+        r = self.send(method, path, **kw)
+        self.check(r, method, path)
+        return None

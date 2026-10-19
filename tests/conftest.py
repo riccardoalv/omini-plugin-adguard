@@ -222,6 +222,14 @@ class FakeAdGuard:
         return [c for c in self.calls if c[0] != "GET"]
 
 
+@pytest.fixture(autouse=True)
+def pauses(monkeypatch):
+    """No real pauses (retries, change checks): the seconds asked are kept."""
+    asked = []
+    monkeypatch.setattr("time.sleep", asked.append)
+    return asked
+
+
 @pytest.fixture
 def adguard(monkeypatch):
     fake = FakeAdGuard()

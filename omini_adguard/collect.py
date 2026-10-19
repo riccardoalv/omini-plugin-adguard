@@ -24,6 +24,10 @@ from omini_sdk import (
     Service,
     log,
 )
+from omini_sdk import optional as sdk_optional
+from omini_sdk.changes import Pending, apply_verify
+from omini_sdk.http import Unauthorized
+from omini_sdk.http import settings as http_settings
 
 try:  # DNS lookups: Omini 1.6 and later
     from omini_sdk import DnsLookup
@@ -58,7 +62,7 @@ def client_from(cfg: Config) -> Client:
         url,
         cfg.str("username"),
         cfg.str("password"),
-        verify_tls=cfg.bool("verify_tls"),
+        **http_settings(cfg),
     )
 
 
@@ -70,12 +74,10 @@ def host_of(cfg: Config) -> str:
     return (urlsplit(url).hostname or url).lower()
 
 
-def optional(fn: Callable[[], T], default: T) -> T:
-    """An endpoint some versions or builds lack (404): its default instead."""
-    try:
-        return fn()
-    except NotFound:
-        return default
+def optional(what: str, fn: Callable[[], T], default: T) -> T:
+    """Data some versions or builds lack (404), or that cannot be read now:
+    its default instead (logged once)."""
+    return sdk_optional(what, fn, default)
 
 
 def mac(value: Any) -> str | None:
@@ -150,9 +152,8 @@ def own_mac(c: Client, host: str) -> str | None:
     builds without a DHCP server lack): the device's key, so it merges with the
     machine it runs on. Among the others, one with an address comes first."""
     try:
-        got = c.get("/control/dhcp/interfaces")
-    except (NotFound, PluginError) as e:
-        log.debug("interfaces not read: %s", e)
+        got = optional("the network interfaces", lambda: c.get("/control/dhcp/interfaces"), None)
+    except Unauthorized:  # its 403 for this one endpoint: the status was read
         return None
     if not isinstance(got, dict):
         return None
@@ -244,12 +245,10 @@ def recent_lookups(c: Client) -> list[Any] | None:
     is off, or a failed read (they only name where devices go)."""
     if DnsLookup is None or "dns_lookups" not in Device.model_fields:
         return None
-    try:
-        data = c.get(f"/control/querylog?limit={QUERYLOG_LIMIT}") or {}
-        return lookups(data.get("data") or []) or None
-    except Exception as e:
-        log.debug("query log not read: %s", e)
+    data = optional("the query log", lambda: c.get(f"/control/querylog?limit={QUERYLOG_LIMIT}"), {})
+    if not isinstance(data, dict):
         return None
+    return lookups(data.get("data") or []) or None
 
 
 def when(value: Any) -> datetime | None:
@@ -327,7 +326,7 @@ def read(c: Client, host: str) -> Device:
         raise PluginError("the address did not answer like AdGuard Home (no /control/status)")
     rows = rewrites(c)
     # Builds without a DHCP server (or a disabled one) report no leases.
-    dhcp = optional(lambda: c.get("/control/dhcp/status"), None) or {}
+    dhcp = optional("the DHCP server", lambda: c.get("/control/dhcp/status"), None) or {}
     dhcp_on = bool(dhcp.get("enabled"))
     services = [
         Service(
@@ -444,15 +443,10 @@ def set_name(c: Client, name: str, ip: str) -> None:
     try:
         c.put("/control/rewrite/update", {"target": entry(first), "update": new})
     except NotFound:
-        # Versions before the update endpoint: delete, then add (and put it back on failure).
+        # Versions before the update endpoint: delete, then add (put back by
+        # restore when the add fails).
         c.post("/control/rewrite/delete", entry(first))
-        try:
-            c.post("/control/rewrite/add", new)
-        except (PluginError, NotFound) as e:
-            c.post("/control/rewrite/add", entry(first))
-            if isinstance(e, NotFound):
-                raise PluginError(f"AdGuard Home has no {e}") from e
-            raise
+        c.post("/control/rewrite/add", new)
     for r in rest:
         c.post("/control/rewrite/delete", entry(r))
 
@@ -464,6 +458,55 @@ def delete_name(c: Client, name: str) -> None:
             c.post("/control/rewrite/delete", entry(r))
 
 
+def restore(c: Client, name: str, before: list[dict[str, Any]]) -> None:
+    """Puts the IPv4 rewrites of name back as they were: removes the ones
+    added, adds back the ones removed, and switches each back on or off."""
+    was = {(r.get("domain"), r.get("answer")): r for r in before}
+    now = {(r.get("domain"), r.get("answer")): r for r in same(rewrites(c), name)}
+    for k, r in now.items():
+        if k not in was:
+            c.post("/control/rewrite/delete", entry(r))
+        elif on(r) != on(was[k]) and "enabled" in r:
+            c.put(
+                "/control/rewrite/update",
+                {"target": entry(r), "update": entry(r) | {"enabled": on(was[k])}},
+            )
+    for k, r in was.items():
+        if k not in now:
+            c.post(
+                "/control/rewrite/add",
+                entry(r) | ({"enabled": r["enabled"]} if "enabled" in r else {}),
+            )
+
+
+# How long a change waits for AdGuard Home to show it (the SDK's window).
+VERIFY_S = 30
+POLL_S = 2
+
+
+def change_name(c: Client, name: str, apply_fn: Callable[[], None], want: list[str], message: str):
+    """Runs a change of name's rewrites, reads them again until AdGuard Home
+    answers ``want``, and puts them back as they were when it does not."""
+    before = same(rewrites(c), name)
+
+    def verify() -> bool:
+        got = answered(rewrites(c), name)
+        if got == want:
+            return True
+        ips = ", ".join(sorted(str(ip) for ip in got)) or "nothing"
+        raise Pending(f"it answers {name} with {ips}")
+
+    apply_verify(
+        apply_fn,
+        verify,
+        undo=lambda: restore(c, name, before),
+        timeout=VERIFY_S,
+        interval=POLL_S,
+        message=message,
+        check_in="in AdGuard Home",
+    )
+
+
 def apply(cfg: Config, change: Change) -> list[Device]:
     kind = change.kind if isinstance(change.kind, str) else change.kind.value
     v = value_of(change)
@@ -473,15 +516,19 @@ def apply(cfg: Config, change: Change) -> list[Device]:
             name, ip = wanted_name(v), ipv4(v.get("ip"))
             if not ip:
                 raise PluginError("dns.set: the address must be an IPv4 address")
-            set_name(c, name, ip)
-            if answered(rewrites(c), name) != [ip]:
-                raise PluginError(f"AdGuard Home did not keep {name} → {ip}")
+            change_name(
+                c,
+                name,
+                lambda: set_name(c, name, ip),
+                [ip],
+                f"AdGuard Home did not keep {name} → {ip}",
+            )
             log.info("AdGuard Home: %s set", name)
         elif kind == "dns.delete":
             name = wanted_name(v)
-            delete_name(c, name)
-            if answered(rewrites(c), name):
-                raise PluginError(f"AdGuard Home still answers {name}")
+            change_name(
+                c, name, lambda: delete_name(c, name), [], f"AdGuard Home did not delete {name}"
+            )
             log.info("AdGuard Home: %s deleted", name)
         else:
             raise PluginError(f"AdGuard Home does not support the change {kind}")
@@ -514,14 +561,16 @@ def settings(c: Client) -> dict[str, Any]:
             key=lambda r: (str(r["domain"]), str(r["answer"])),
         ),
     }
-    if (info := optional(lambda: c.get("/control/dns_info"), None)) is not None:
+    if (info := optional("the DNS settings", lambda: c.get("/control/dns_info"), None)) is not None:
         out["dns"] = info
-    if (f := optional(lambda: c.get("/control/filtering/status"), None)) is not None:
+    if (f := optional("the filters", lambda: c.get("/control/filtering/status"), None)) is not None:
         out["filtering"] = filters(f)
-    if (cl := optional(lambda: c.get("/control/clients"), None)) is not None:
+    if (cl := optional("the clients", lambda: c.get("/control/clients"), None)) is not None:
         # Persistent clients only: the "auto" ones are what it saw lately.
         out["clients"] = sorted(cl.get("clients") or [], key=lambda x: str(x.get("name")))
-    if (dhcp := optional(lambda: c.get("/control/dhcp/status"), None)) is not None:
+    if (
+        dhcp := optional("the DHCP server", lambda: c.get("/control/dhcp/status"), None)
+    ) is not None:
         conf = without(dhcp, {"leases"})
         if isinstance(conf.get("v6"), dict):  # leases are live state, not configuration
             conf["v6"] = without(conf["v6"], {"leases"})
@@ -529,7 +578,9 @@ def settings(c: Client) -> dict[str, Any]:
             conf.get("static_leases") or [], key=lambda x: (str(x.get("ip")), str(x.get("mac")))
         )
         out["dhcp"] = conf
-    if (access := optional(lambda: c.get("/control/access/list"), None)) is not None:
+    if (
+        access := optional("the access lists", lambda: c.get("/control/access/list"), None)
+    ) is not None:
         out["access"] = access
     return out
 

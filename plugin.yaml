@@ -38,3 +38,9 @@ fields:
     default: false
     group: Advanced
     help: Turn this on if AdGuard Home's HTTPS certificate is trusted.
+  - key: timeout_s
+    type: int
+    label: Timeout (seconds)
+    default: 15
+    group: Advanced
+    help: How long to wait for each answer of AdGuard Home.

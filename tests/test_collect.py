@@ -526,3 +526,87 @@ def test_backup_leaves_dhcpv6_leases_out(adguard, cfg):
     adguard.dhcp["v6"]["leases"] = [{"mac": "aa:bb:cc:dd:ee:04", "ip": "fd00::104"}]
     [b] = backup(cfg)
     assert "fd00::104" not in b.content
+
+
+# -- the SDK toolkit: retries, the wait and the undo --
+
+
+def test_a_change_not_kept_is_put_back(adguard, cfg, pauses):
+    def handler(request):
+        resp = adguard.handler(request)
+        if request.method == "PUT" and request.url.path == "/control/rewrite/update":
+            body = json.loads(request.content)
+            if body["update"]["answer"] == "192.168.1.25":
+                adguard.rewrites[adguard.find(body["update"])]["answer"] = "192.168.1.99"
+        return resp
+
+    adguard.hook = handler
+    with pytest.raises(
+        PluginError,
+        match=r"did not keep nas\.home\.arpa → 192\.168\.1\.25: "
+        r"it answers nas\.home\.arpa with 192\.168\.1\.99 \(undone\)$",
+    ):
+        apply(cfg, change("dns.set", {"name": "nas.home.arpa", "ip": "192.168.1.25"}))
+    # Read again every 2 s for 30 s, then put back as it was.
+    assert pauses == [collect_module.POLL_S] * 15
+    assert {"domain": "nas.home.arpa", "answer": "192.168.1.20"} in adguard.rewrites
+    assert not any(r["answer"] == "192.168.1.99" for r in adguard.rewrites)
+
+
+def test_a_delete_not_done_is_said(adguard, cfg):
+    def handler(request):
+        if request.url.path == "/control/rewrite/delete":
+            return httpx.Response(200, text="OK")  # accepted, not done
+        return adguard.handler(request)
+
+    adguard.hook = handler
+    with pytest.raises(
+        PluginError,
+        match=r"did not delete nas\.home\.arpa: it answers nas\.home\.arpa with 192\.168\.1\.20",
+    ):
+        apply(cfg, change("dns.delete", {"name": "nas.home.arpa"}))
+
+
+def test_a_busy_server_is_asked_again(adguard, cfg, pauses):
+    busy = {"left": 1}
+
+    def handler(request):
+        if busy["left"]:
+            busy["left"] -= 1
+            return httpx.Response(503, text="busy")
+        return adguard.handler(request)
+
+    adguard.hook = handler
+    [dev] = collect(cfg)
+    assert dev.key == MAC and pauses == [1.0]
+
+
+def test_the_timeout_comes_from_the_form(adguard, cfg, monkeypatch):
+    seen = {}
+    real = collect_module.Client
+
+    def spy(*a, **kw):
+        seen.update(kw)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(collect_module, "Client", spy)
+    collect(cfg)
+    assert seen == {"verify_tls": False, "timeout": 15.0}
+    cfg["timeout_s"] = 40
+    collect(cfg)
+    assert seen["timeout"] == 40.0
+
+
+def test_manifest_groups_the_advanced_fields():
+    from pathlib import Path
+
+    manifest = (Path(__file__).parent.parent / "plugin.yaml").read_text()
+    fields = manifest.split("\nfields:", 1)[1].split("\n  - key: ")[1:]
+    groups = {f.split("\n", 1)[0]: "group: Advanced" in f for f in fields}
+    assert groups == {
+        "url": False,
+        "username": False,
+        "password": False,
+        "verify_tls": True,
+        "timeout_s": True,
+    }
